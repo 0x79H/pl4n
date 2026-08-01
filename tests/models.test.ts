@@ -317,3 +317,64 @@ describe("Pl4nConfig", () => {
     }
   });
 });
+
+describe("Pl4nConfig agent type validation", () => {
+  it("rejects unknown agent types", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pl4n-config-"));
+    const pl4nDir = path.join(root, ".pl4n");
+    try {
+      await fs.mkdir(pl4nDir, { recursive: true });
+      const yaml = [
+        "agents:",
+        "  - id: mystery",
+        "    type: nonexistent",
+        "    model: whatever",
+        "",
+      ].join("\n");
+      await fs.writeFile(path.join(pl4nDir, "pl4n.yaml"), yaml, "utf8");
+      let error: Error | undefined;
+      try {
+        await Pl4nConfig.loadFromPl4nDir(pl4nDir);
+      } catch (err) {
+        error = err as Error;
+      }
+      expect(error).toBeDefined();
+      expect(error?.message).toContain("type must be one of");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown agent types even when disabled", async () => {
+    // Intentional pin of the breaking behavior change: unknown-type entries
+    // used to load (and be silently skipped); now they fail config load even
+    // with enabled: false. See the PR description for the migration note.
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pl4n-config-"));
+    const pl4nDir = path.join(root, ".pl4n");
+    try {
+      await fs.mkdir(pl4nDir, { recursive: true });
+      const yaml = [
+        "agents:",
+        "  - id: alpha",
+        "    type: claude",
+        "    model: opus",
+        "  - id: parked",
+        "    type: gemini",
+        "    model: gemini-pro",
+        "    enabled: false",
+        "",
+      ].join("\n");
+      await fs.writeFile(path.join(pl4nDir, "pl4n.yaml"), yaml, "utf8");
+      let error: Error | undefined;
+      try {
+        await Pl4nConfig.loadFromPl4nDir(pl4nDir);
+      } catch (err) {
+        error = err as Error;
+      }
+      expect(error).toBeDefined();
+      expect(error?.message).toContain("agents[1].type must be one of");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});

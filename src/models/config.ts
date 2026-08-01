@@ -19,6 +19,8 @@ const DEFAULT_CODEX_CONFIG: CodexConfig = {
   search: true,
 };
 
+const AGENT_TYPES = new Set(["claude", "codex"]);
+
 const CODEX_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 let warnedCodexXmax = false;
 
@@ -236,6 +238,9 @@ function parseAgentConfig(value: unknown, field: string, defaults: AgentDefaults
     throw new Error(`${field} must be a mapping`);
   }
   const type = requireString(value.type, `${field}.type`);
+  if (!AGENT_TYPES.has(type)) {
+    throw new Error(`${field}.type must be one of ${[...AGENT_TYPES].join(", ")}`);
+  }
   const claudeValue = value.claude;
   const codexValue = value.codex;
   let thinking = optionalString(value.thinking, `${field}.thinking`);
@@ -255,8 +260,6 @@ function parseAgentConfig(value: unknown, field: string, defaults: AgentDefaults
     }
     codexConfig = mergeCodexConfig(defaults.codex, codexConfig);
     thinking = normalizeCodexThinking(thinking, `${field}.thinking`);
-  } else if (claudeValue !== undefined || codexValue !== undefined) {
-    throw new Error(`${field} cannot include claude/codex config for type ${type}`);
   }
 
   return {

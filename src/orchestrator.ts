@@ -7,9 +7,20 @@ import { fileExists } from "./utils/fs";
 import { ClaudeCodeSyncAdapter } from "./adapters/claude";
 import { CodexCLISyncAdapter } from "./adapters/codex";
 import { AgentStatus, Phase, Pl4nConfig } from "./models";
+import type { AgentConfig } from "./models";
 import { generateUniqueName } from "./names";
 import { getDraftPrompt, getPeerReviewPrompt, getSynthesisPrompt } from "./prompts";
 import { SessionManager } from "./session";
+
+function createSyncAdapter(config: AgentConfig, context: string): AgentAdapter {
+  if (config.type === "claude") {
+    return new ClaudeCodeSyncAdapter(config);
+  }
+  if (config.type === "codex") {
+    return new CodexCLISyncAdapter(config);
+  }
+  throw new Error(`Unknown agent type "${config.type}" for ${context}`);
+}
 
 function extractErrorSummary(output: string): string {
   // Look for common error patterns and extract a concise summary
@@ -79,12 +90,11 @@ export class TurnOrchestrator {
       if (agentConfig.enabled === false) {
         continue;
       }
-      if (agentConfig.type === "claude") {
-        this.adapters[agentConfig.id] = new ClaudeCodeSyncAdapter(agentConfig);
-      } else if (agentConfig.type === "codex") {
-        this.adapters[agentConfig.id] = new CodexCLISyncAdapter(agentConfig);
-      }
+      this.adapters[agentConfig.id] = createSyncAdapter(agentConfig, `agent "${agentConfig.id}"`);
     }
+    // Validate eagerly: a bad synthesizer type must not surface only after a
+    // full round of drafting and peer review.
+    createSyncAdapter(config.synthesizer, "synthesizer");
   }
 
   async runTurn(sessionId: string): Promise<boolean> {
@@ -322,10 +332,7 @@ export class TurnOrchestrator {
     }
 
     const synthConfig = this.config.synthesizer;
-    const adapter =
-      synthConfig.type === "claude"
-        ? new ClaudeCodeSyncAdapter(synthConfig)
-        : new CodexCLISyncAdapter(synthConfig);
+    const adapter = createSyncAdapter(synthConfig, "synthesizer");
 
     const synthFile = path.join(paths.agents, "synthesis_temp.md");
     await fs.mkdir(path.dirname(synthFile), { recursive: true });

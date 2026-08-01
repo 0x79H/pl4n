@@ -461,3 +461,29 @@ process.exit(1);
     });
   });
 });
+
+describe("TurnOrchestrator agent type validation", () => {
+  it("throws on unknown agent types instead of skipping them", () => {
+    const config = new Pl4nConfig({
+      agents: [{ id: "mystery", type: "nonexistent", model: "whatever", enabled: true }],
+      synthesizer: { id: "synth", type: "claude", model: "opus", enabled: true },
+    });
+    const manager = new SessionManager(path.join(os.tmpdir(), "pl4n-orch-noop"));
+
+    expect(() => new TurnOrchestrator(manager, config)).toThrow(
+      'Unknown agent type "nonexistent" for agent "mystery"',
+    );
+  });
+
+  it("throws at construction for unknown synthesizer types", () => {
+    const config = new Pl4nConfig({
+      agents: [{ id: "opus", type: "claude", model: "opus", enabled: true }],
+      synthesizer: { id: "synth", type: "nonexistent", model: "whatever", enabled: true },
+    });
+    const manager = new SessionManager(path.join(os.tmpdir(), "pl4n-orch-noop"));
+
+    expect(() => new TurnOrchestrator(manager, config)).toThrow(
+      'Unknown agent type "nonexistent" for synthesizer',
+    );
+  });
+});
