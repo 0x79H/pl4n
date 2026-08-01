@@ -487,3 +487,132 @@ describe("TurnOrchestrator agent type validation", () => {
     );
   });
 });
+
+describe("TurnOrchestrator opencode", () => {
+  it("creates adapters for opencode agents", () => {
+    const config = new Pl4nConfig({
+      agents: [
+        { id: "opus", type: "claude", model: "opus", enabled: true },
+        { id: "free", type: "opencode", model: "opencode/deepseek-v4-flash-free", enabled: true },
+      ],
+      synthesizer: { id: "synth", type: "claude", model: "opus", enabled: true },
+    });
+    const manager = new SessionManager(path.join(os.tmpdir(), "pl4n-orch-noop"));
+    const orchestrator = new TurnOrchestrator(manager, config);
+
+    expect(Object.keys(orchestrator.adapters).sort()).toEqual(["free", "opus"]);
+    expect(orchestrator.adapters.free.getName()).toBe("Opencode CLI Sync (opencode/deepseek-v4-flash-free)");
+    expect(orchestrator.adapters.opus.getName()).toBe("Claude Code Sync (opus)");
+  });
+
+  it("uses the opencode adapter for an opencode synthesizer", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "claude"),
+        `#!/usr/bin/env bun
+const payload = JSON.stringify({ session_id: "sess-1", result: "# Plan from Claude" });
+process.stdout.write(payload);
+`,
+      );
+
+      await writeExecutable(
+        path.join(binDir, "codex"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "thread.started", thread_id: "thread-1" }),
+  JSON.stringify({ type: "item.message", role: "assistant", content: "# Plan from Codex" })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_synth", part: { messageID: "msg_1", type: "text", text: "# Plan from Opencode Synth" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const config = new Pl4nConfig({
+          agents: [
+            { id: "opus", type: "claude", model: "opus", enabled: true },
+            { id: "codex", type: "codex", model: "gpt-5.2-codex", enabled: true },
+          ],
+          synthesizer: {
+            id: "synth",
+            type: "opencode",
+            model: "opencode/deepseek-v4-flash-free",
+            opencode: { agent: "plan" },
+            enabled: true,
+          },
+        });
+
+        const manager = new SessionManager(path.join(root, ".pl4n-test"));
+        const state = await manager.createSession("Test task");
+        state.phase = Phase.Drafting;
+        await manager.saveState(state);
+
+        const orchestrator = new TurnOrchestrator(manager, config);
+        const success = await orchestrator.runTurn(state.sessionId);
+        expect(success).toBe(true);
+
+        const paths = manager.getPaths(state.sessionId);
+        const turnFile = paths.turnFile(1);
+        expect(await fs.readFile(turnFile, "utf8")).toBe("# Plan from Opencode Synth");
+
+        const sessionFile = paths.agentSessionFile("synthesizer");
+        expect(await fs.readFile(sessionFile, "utf8")).toBe("ses_synth");
+      });
+    });
+  });
+
+  it("runs a turn with an opencode drafting agent", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_draft", part: { messageID: "msg_1", type: "text", text: "# Plan from Opencode" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const config = new Pl4nConfig({
+          agents: [{ id: "free", type: "opencode", model: "opencode/deepseek-v4-flash-free", enabled: true }],
+          synthesizer: { id: "synth", type: "claude", model: "opus", enabled: true },
+        });
+
+        const manager = new SessionManager(path.join(root, ".pl4n-test"));
+        const state = await manager.createSession("Test task");
+        state.phase = Phase.Drafting;
+        await manager.saveState(state);
+
+        const orchestrator = new TurnOrchestrator(manager, config);
+        const success = await orchestrator.runTurn(state.sessionId);
+        expect(success).toBe(true);
+
+        const paths = manager.getPaths(state.sessionId);
+        const turnFile = paths.turnFile(1);
+        expect(await fs.readFile(turnFile, "utf8")).toBe("# Plan from Opencode");
+      });
+    });
+  });
+});

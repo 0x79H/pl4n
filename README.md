@@ -155,7 +155,7 @@ When you edit `turns/001.md` and call `continue`, agents receive your changes as
 | `pl4n list` | List all sessions |
 | `pl4n clean --session <id>` | Remove session data |
 | `pl4n diff --session <id>` | Show changes between turns |
-| `pl4n server start|stop|status` | Manage web editor server |
+| `pl4n server start\|stop\|status` | Manage web editor server |
 
 ## File Structure
 
@@ -224,6 +224,8 @@ claude:
 codex:
   full_auto: true
   search: true
+opencode:
+  agent: plan
 agents:
   - id: opus
     type: claude
@@ -234,6 +236,10 @@ agents:
     model: gpt-5.2-codex
     thinking: xhigh
     enabled: true
+  - id: free
+    type: opencode
+    model: opencode/deepseek-v4-flash-free
+    enabled: true
 synthesizer:
   id: synthesizer
   type: claude
@@ -241,7 +247,9 @@ synthesizer:
   enabled: true
 ```
 
-If the file is missing, defaults are used.
+If the file is missing, built-in defaults are used: two agents — `opus` (claude, model
+`opus`, thinking `ultrathink`) and `codex` (model `gpt-5.2-codex`, thinking `xhigh`) — with a
+claude `opus` synthesizer. Config is per-project; there is no global agent configuration.
 For Codex agents, `thinking` maps to `model_reasoning_effort` (valid values: none, minimal, low, medium, high, xhigh).
 Codex constraints live under `codex` (defaults) or `agents[].codex` (overrides), with keys:
 `full_auto`, `sandbox`, `approval_policy`, `dangerously_bypass`, `add_dir`, `search`, `config`, and `mcp`.
@@ -249,6 +257,12 @@ Codex constraints live under `codex` (defaults) or `agents[].codex` (overrides),
 For Claude agents, `claude.allowed_tools` maps to `--allowedTools`, and `claude.add_dir` maps to
 `--add-dir`. Claude's allowlist is best-effort; shell commands can still write if they redirect
 output. Override defaults per agent with `agents[].claude` or `agents[].codex`.
+Opencode agents run any model the local `opencode` CLI has configured (format `provider/model`).
+`opencode.agent` selects the opencode agent (default `plan`, which is read-only; the adapter
+captures its text output and writes the plan file itself). `thinking` maps to `--variant`
+(provider-specific reasoning effort, e.g. low, high, max; values are passed through unvalidated).
+Note: non-plan opencode agents run with whatever permissions the local opencode CLI grants —
+pl4n imposes no constraints on them (unlike `claude.allowed_tools` or the codex sandbox flags).
 If you pass `--pl4n-dir`, the config is loaded from that directory.
 
 ## Architecture
@@ -264,7 +278,8 @@ src/
 └── adapters/
     ├── base.ts     # AgentAdapter interface
     ├── claude.ts   # Claude Code adapter (subprocess, --resume)
-    └── codex.ts    # Codex CLI adapter (subprocess, resume)
+    ├── codex.ts    # Codex CLI adapter (subprocess, resume)
+    └── opencode.ts # opencode CLI adapter (subprocess, --session)
 ```
 
 ## Development

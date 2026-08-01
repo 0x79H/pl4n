@@ -378,3 +378,139 @@ describe("Pl4nConfig agent type validation", () => {
     }
   });
 });
+
+describe("Pl4nConfig opencode", () => {
+  it("loads opencode agents and synthesizer from yaml", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pl4n-config-"));
+    const pl4nDir = path.join(root, ".pl4n");
+    try {
+      await fs.mkdir(pl4nDir, { recursive: true });
+      const yaml = [
+        "agents:",
+        "  - id: alpha",
+        "    type: claude",
+        "    model: opus",
+        "  - id: free",
+        "    type: opencode",
+        "    model: opencode/deepseek-v4-flash-free",
+        "    thinking: high",
+        "    opencode:",
+        "      agent: build",
+        "synthesizer:",
+        "  id: synth",
+        "  type: opencode",
+        "  model: opencode/deepseek-v4-flash-free",
+        "",
+      ].join("\n");
+      await fs.writeFile(path.join(pl4nDir, "pl4n.yaml"), yaml, "utf8");
+
+      const config = await Pl4nConfig.loadFromPl4nDir(pl4nDir);
+      expect(config.agents.length).toBe(2);
+      const opencodeAgent = config.agents.find((agent) => agent.type === "opencode");
+      expect(opencodeAgent).toEqual({
+        id: "free",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+        thinking: "high",
+        opencode: { agent: "build" },
+        enabled: true,
+      });
+      expect(config.synthesizer.type).toBe("opencode");
+      expect(config.synthesizer.opencode).toEqual({ agent: "plan" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies top-level opencode defaults", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pl4n-config-"));
+    const pl4nDir = path.join(root, ".pl4n");
+    try {
+      await fs.mkdir(pl4nDir, { recursive: true });
+      const yaml = [
+        "opencode:",
+        "  agent: general",
+        "agents:",
+        "  - id: free",
+        "    type: opencode",
+        "    model: opencode/deepseek-v4-flash-free",
+        "",
+      ].join("\n");
+      await fs.writeFile(path.join(pl4nDir, "pl4n.yaml"), yaml, "utf8");
+
+      const config = await Pl4nConfig.loadFromPl4nDir(pl4nDir);
+      expect(config.agents[0].opencode).toEqual({ agent: "general" });
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects cross-type config sections", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "pl4n-config-"));
+    const pl4nDir = path.join(root, ".pl4n");
+    try {
+      await fs.mkdir(pl4nDir, { recursive: true });
+      const cases: Array<[string, string]> = [
+        ["claude", "opencode"],
+        ["codex", "opencode"],
+        ["opencode", "claude"],
+        ["opencode", "codex"],
+      ];
+      for (const [agentType, extraSection] of cases) {
+        const yaml = [
+          "agents:",
+          "  - id: mixed",
+          `    type: ${agentType}`,
+          "    model: some-model",
+          `    ${extraSection}:`,
+          extraSection === "claude" ? "      allowed_tools: [Read]" : "      agent: plan",
+          "",
+        ].join("\n");
+        await fs.writeFile(path.join(pl4nDir, "pl4n.yaml"), yaml, "utf8");
+        let error: Error | undefined;
+        try {
+          await Pl4nConfig.loadFromPl4nDir(pl4nDir);
+        } catch (err) {
+          error = err as Error;
+        }
+        expect(error).toBeDefined();
+        expect(error?.message).toContain(`not valid for ${agentType} agents`);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("serializes opencode config in toConfigDict", () => {
+    const config = new Pl4nConfig({
+      agents: [
+        {
+          id: "free",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+          thinking: "high",
+          opencode: { agent: "plan" },
+          enabled: true,
+        },
+      ],
+      synthesizer: {
+        id: "synth",
+        type: "claude",
+        model: "opus",
+        enabled: true,
+      },
+    });
+
+    const data = config.toConfigDict();
+    expect(data.agents).toEqual([
+      {
+        id: "free",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+        thinking: "high",
+        opencode: { agent: "plan" },
+        enabled: true,
+      },
+    ]);
+  });
+});

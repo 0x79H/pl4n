@@ -20,6 +20,10 @@ export interface CodexConfig {
   mcp?: Record<string, unknown>;
 }
 
+export interface OpencodeConfig {
+  agent?: string;
+}
+
 export interface AgentConfig {
   id: string;
   type: string;
@@ -27,6 +31,7 @@ export interface AgentConfig {
   thinking?: string;
   claude?: ClaudeConfig;
   codex?: CodexConfig;
+  opencode?: OpencodeConfig;
   enabled?: boolean;
 }
 

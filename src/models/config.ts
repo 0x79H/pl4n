@@ -8,7 +8,13 @@ import { load as loadYaml } from "js-yaml";
 
 import { DEFAULT_CLAUDE_ALLOWED_TOOLS } from "../defaults";
 import { isRecord } from "../utils/types";
-import type { AgentConfig, ClaudeConfig, CodexConfig, Pl4nConfigParams } from "./types";
+import type {
+  AgentConfig,
+  ClaudeConfig,
+  CodexConfig,
+  OpencodeConfig,
+  Pl4nConfigParams,
+} from "./types";
 
 const DEFAULT_CLAUDE_CONFIG: ClaudeConfig = {
   allowedTools: DEFAULT_CLAUDE_ALLOWED_TOOLS,
@@ -19,7 +25,11 @@ const DEFAULT_CODEX_CONFIG: CodexConfig = {
   search: true,
 };
 
-const AGENT_TYPES = new Set(["claude", "codex"]);
+const DEFAULT_OPENCODE_CONFIG: OpencodeConfig = {
+  agent: "plan",
+};
+
+const AGENT_TYPES = new Set(["claude", "codex", "opencode"]);
 
 const CODEX_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 let warnedCodexXmax = false;
@@ -132,6 +142,27 @@ function optionalRecord(value: unknown, field: string): Record<string, unknown> 
   return value;
 }
 
+function mergeOpencodeConfig(
+  base?: OpencodeConfig,
+  override?: OpencodeConfig,
+): OpencodeConfig | undefined {
+  if (!base && !override) {
+    return undefined;
+  }
+  return {
+    agent: override?.agent ?? base?.agent,
+  };
+}
+
+function parseOpencodeConfig(value: unknown, field: string): OpencodeConfig {
+  if (!isRecord(value)) {
+    throw new Error(`${field} must be a mapping`);
+  }
+  return {
+    agent: optionalString(value.agent, `${field}.agent`),
+  };
+}
+
 function mergeClaudeConfig(base?: ClaudeConfig, override?: ClaudeConfig): ClaudeConfig | undefined {
   if (!base && !override) {
     return undefined;
@@ -231,6 +262,7 @@ function normalizeCodexThinking(value: string | undefined, field: string): strin
 type AgentDefaults = {
   claude?: ClaudeConfig;
   codex?: CodexConfig;
+  opencode?: OpencodeConfig;
 };
 
 function parseAgentConfig(value: unknown, field: string, defaults: AgentDefaults): AgentConfig {
@@ -243,23 +275,42 @@ function parseAgentConfig(value: unknown, field: string, defaults: AgentDefaults
   }
   const claudeValue = value.claude;
   const codexValue = value.codex;
+  const opencodeValue = value.opencode;
   let thinking = optionalString(value.thinking, `${field}.thinking`);
   let claudeConfig =
     claudeValue === undefined ? undefined : parseClaudeConfig(claudeValue, `${field}.claude`);
   let codexConfig =
     codexValue === undefined ? undefined : parseCodexConfig(codexValue, `${field}.codex`);
+  let opencodeConfig =
+    opencodeValue === undefined
+      ? undefined
+      : parseOpencodeConfig(opencodeValue, `${field}.opencode`);
 
   if (type === "claude") {
     if (codexValue !== undefined) {
       throw new Error(`${field}.codex is not valid for claude agents`);
+    }
+    if (opencodeValue !== undefined) {
+      throw new Error(`${field}.opencode is not valid for claude agents`);
     }
     claudeConfig = mergeClaudeConfig(defaults.claude, claudeConfig);
   } else if (type === "codex") {
     if (claudeValue !== undefined) {
       throw new Error(`${field}.claude is not valid for codex agents`);
     }
+    if (opencodeValue !== undefined) {
+      throw new Error(`${field}.opencode is not valid for codex agents`);
+    }
     codexConfig = mergeCodexConfig(defaults.codex, codexConfig);
     thinking = normalizeCodexThinking(thinking, `${field}.thinking`);
+  } else if (type === "opencode") {
+    if (claudeValue !== undefined) {
+      throw new Error(`${field}.claude is not valid for opencode agents`);
+    }
+    if (codexValue !== undefined) {
+      throw new Error(`${field}.codex is not valid for opencode agents`);
+    }
+    opencodeConfig = mergeOpencodeConfig(defaults.opencode, opencodeConfig);
   }
 
   return {
@@ -269,6 +320,7 @@ function parseAgentConfig(value: unknown, field: string, defaults: AgentDefaults
     thinking,
     claude: claudeConfig,
     codex: codexConfig,
+    opencode: opencodeConfig,
     enabled: parseEnabled(value.enabled, `${field}.enabled`),
   };
 }
@@ -279,6 +331,9 @@ function applyAgentDefaults(agent: AgentConfig, defaults: AgentDefaults): AgentC
   }
   if (agent.type === "codex") {
     return { ...agent, codex: mergeCodexConfig(agent.codex, defaults.codex) };
+  }
+  if (agent.type === "opencode") {
+    return { ...agent, opencode: mergeOpencodeConfig(agent.opencode, defaults.opencode) };
   }
   return agent;
 }
@@ -319,9 +374,14 @@ function parsePl4nConfig(value: unknown): Pl4nConfigParams {
     DEFAULT_CODEX_CONFIG,
     value.codex === undefined ? undefined : parseCodexConfig(value.codex, "codex"),
   );
+  const opencodeDefaults = mergeOpencodeConfig(
+    DEFAULT_OPENCODE_CONFIG,
+    value.opencode === undefined ? undefined : parseOpencodeConfig(value.opencode, "opencode"),
+  );
   const agentDefaults: AgentDefaults = {
     claude: claudeDefaults,
     codex: codexDefaults,
+    opencode: opencodeDefaults,
   };
 
   const agents =
@@ -443,6 +503,17 @@ export class Pl4nConfig {
       return Object.keys(data).length > 0 ? data : null;
     };
 
+    const serializeOpencode = (config?: OpencodeConfig): Record<string, unknown> | null => {
+      if (!config) {
+        return null;
+      }
+      const data: Record<string, unknown> = {};
+      if (config.agent) {
+        data.agent = config.agent;
+      }
+      return Object.keys(data).length > 0 ? data : null;
+    };
+
     const serializeAgent = (agent: AgentConfig): Record<string, unknown> => {
       const data: Record<string, unknown> = {
         id: agent.id,
@@ -459,6 +530,10 @@ export class Pl4nConfig {
       const codex = serializeCodex(agent.codex);
       if (codex) {
         data.codex = codex;
+      }
+      const opencode = serializeOpencode(agent.opencode);
+      if (opencode) {
+        data.opencode = opencode;
       }
       if (agent.enabled !== undefined) {
         data.enabled = agent.enabled;

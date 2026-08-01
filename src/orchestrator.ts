@@ -6,6 +6,7 @@ import type { AgentAdapter } from "./adapters/base";
 import { fileExists } from "./utils/fs";
 import { ClaudeCodeSyncAdapter } from "./adapters/claude";
 import { CodexCLISyncAdapter } from "./adapters/codex";
+import { OpencodeCLISyncAdapter } from "./adapters/opencode";
 import { AgentStatus, Phase, Pl4nConfig } from "./models";
 import type { AgentConfig } from "./models";
 import { generateUniqueName } from "./names";
@@ -18,6 +19,9 @@ function createSyncAdapter(config: AgentConfig, context: string): AgentAdapter {
   }
   if (config.type === "codex") {
     return new CodexCLISyncAdapter(config);
+  }
+  if (config.type === "opencode") {
+    return new OpencodeCLISyncAdapter(config);
   }
   throw new Error(`Unknown agent type "${config.type}" for ${context}`);
 }

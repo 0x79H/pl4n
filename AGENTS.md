@@ -48,8 +48,8 @@ automation with Playwright. Start server, take screenshots, verify DOM state.
 ## Project Overview
 
 Pl4n is a multi-agent ensemble planning CLI. It orchestrates multiple AI agents
-(Claude Code, OpenAI Codex) to collaboratively create implementation plans for
-tasks, with human-in-the-loop review.
+(Claude Code, OpenAI Codex, opencode) to collaboratively create implementation
+plans for tasks, with human-in-the-loop review.
 
 See `README.md` for full documentation.
 
@@ -80,7 +80,8 @@ src/
 └── adapters/
     ├── base.ts     # AgentAdapter interface
     ├── claude.ts   # Claude Code adapter (with session continuation)
-    └── codex.ts    # Codex CLI adapter (with session continuation)
+    ├── codex.ts    # Codex CLI adapter (with session continuation)
+    └── opencode.ts # opencode CLI adapter (with session continuation)
 
 ## Session File Structure
 

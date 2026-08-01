@@ -7,6 +7,7 @@ import { describe, expect, it } from "bun:test";
 import { AgentAdapter, AgentHandle } from "../src/adapters/base";
 import { ClaudeCodeAdapter, ClaudeCodeSyncAdapter } from "../src/adapters/claude";
 import { CodexCLIAdapter, CodexCLISyncAdapter } from "../src/adapters/codex";
+import { OpencodeCLIAdapter, OpencodeCLISyncAdapter } from "../src/adapters/opencode";
 import { AgentStatus } from "../src/models";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
@@ -1174,6 +1175,525 @@ for (const line of lines) {
         expect(success).toBe(true);
         expect(output).toBe("fresh output");
       });
+    });
+  });
+});
+
+describe("Opencode adapters", () => {
+  it("builds commands and handles empty streams", async () => {
+    await withTempDir(async (root) => {
+      const sessionFile = path.join(root, "opencode-session.txt");
+      await fs.writeFile(sessionFile, "ses_123", "utf8");
+
+      const logFile = path.join(root, "opencode.log");
+      const logFileSync = path.join(root, "opencode-sync.log");
+      const outputFile = path.join(root, "output.md");
+      const outputFileSync = path.join(root, "output-sync.md");
+
+      const adapter = new OpencodeCLIAdapter({
+        id: "opencode",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+        thinking: "high",
+        opencode: { agent: "plan" },
+      });
+      const syncAdapter = new OpencodeCLISyncAdapter({
+        id: "opencode-sync",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+        thinking: "high",
+        opencode: { agent: "plan" },
+      });
+
+      const originalSpawn = Bun.spawn;
+      const bunSpawn = Bun as unknown as { spawn: (options: any) => Bun.Subprocess };
+      const spawnOptions: Array<{ cmd: string[]; cwd?: string; env?: Record<string, string> }> =
+        [];
+      bunSpawn.spawn = (options: {
+        cmd: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+      }) => {
+        spawnOptions.push(options);
+        return {
+          stdout: null,
+          stderr: null,
+          exited: Promise.resolve(0),
+          exitCode: 0,
+          kill: () => {},
+        } as unknown as Bun.Subprocess;
+      };
+
+      try {
+        adapter.spawn({ worktree: root, prompt: "hello", outputFile, logFile, sessionFile });
+        syncAdapter.spawn({
+          worktree: root,
+          prompt: "hello",
+          outputFile: outputFileSync,
+          logFile: logFileSync,
+          sessionFile,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } finally {
+        bunSpawn.spawn = originalSpawn as unknown as (options: any) => Bun.Subprocess;
+      }
+
+      const commands = spawnOptions.map((options) => options.cmd);
+      expect(commands.length).toBe(2);
+      for (const options of spawnOptions) {
+        expect(options.cwd).toBe(root);
+        expect(options.env?.PATH).toBe(process.env.PATH);
+      }
+      for (const cmd of commands) {
+        expect(cmd[0]).toBe("opencode");
+        expect(cmd[1]).toBe("run");
+        expect(cmd).toContain("--format");
+        expect(cmd).toContain("json");
+        expect(cmd).toContain("--model");
+        expect(cmd).toContain("opencode/deepseek-v4-flash-free");
+        expect(cmd).toContain("--agent");
+        expect(cmd).toContain("plan");
+        expect(cmd).toContain("--variant");
+        expect(cmd).toContain("high");
+        expect(cmd).toContain("--session");
+        expect(cmd).toContain("ses_123");
+        expect(cmd[cmd.length - 1]).toBe("hello");
+        expect(cmd).not.toContain("--auto");
+      }
+      expect(adapter.getName()).toBe("Opencode CLI (opencode/deepseek-v4-flash-free)");
+      expect(syncAdapter.getName()).toBe("Opencode CLI Sync (opencode/deepseek-v4-flash-free)");
+      expect(await fs.readFile(logFile, "utf8")).toBe("");
+      expect(await fs.readFile(logFileSync, "utf8")).toBe("");
+    });
+  });
+
+  it("defaults to the plan agent and omits optional flags", async () => {
+    await withTempDir(async (root) => {
+      const logFile = path.join(root, "opencode.log");
+      const outputFile = path.join(root, "output.md");
+      const adapter = new OpencodeCLIAdapter({
+        id: "opencode",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+      });
+
+      const originalSpawn = Bun.spawn;
+      const bunSpawn = Bun as unknown as { spawn: (options: any) => Bun.Subprocess };
+      const commands: string[][] = [];
+      bunSpawn.spawn = (options: { cmd: string[] }) => {
+        commands.push(options.cmd);
+        return {
+          stdout: null,
+          stderr: null,
+          exited: Promise.resolve(0),
+          exitCode: 0,
+          kill: () => {},
+        } as unknown as Bun.Subprocess;
+      };
+
+      try {
+        adapter.spawn({ worktree: root, prompt: "hello", outputFile, logFile });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } finally {
+        bunSpawn.spawn = originalSpawn as unknown as (options: any) => Bun.Subprocess;
+      }
+
+      expect(commands.length).toBe(1);
+      expect(commands[0]).toContain("--agent");
+      expect(commands[0]).toContain("plan");
+      expect(commands[0]).not.toContain("--variant");
+      expect(commands[0]).not.toContain("--session");
+    });
+  });
+
+  it("parses JSON events and updates session id", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const args = process.argv.slice(2);
+const isResume = args.includes("--session");
+const sessionId = isResume ? "ses_resume" : "ses_start";
+const lines = [
+  JSON.stringify({ type: "step_start", sessionID: sessionId, part: { type: "step-start" } }),
+  JSON.stringify({ type: "text", sessionID: sessionId, part: { messageID: "msg_1", type: "text", text: "# Plan from Opencode" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "output.md");
+        const logFile = path.join(root, "opencode.log");
+        const sessionFile = path.join(root, "opencode-session.txt");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+          sessionFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("# Plan from Opencode");
+        expect(await fs.readFile(sessionFile, "utf8")).toBe("ses_start");
+
+        const [success2] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+          sessionFile,
+          appendLog: true,
+        });
+
+        expect(success2).toBe(true);
+        expect(await fs.readFile(sessionFile, "utf8")).toBe("ses_resume");
+
+        const logContent = await fs.readFile(logFile, "utf8");
+        expect(logContent.length).toBeGreaterThan(0);
+      });
+    });
+  });
+
+  it("prefers parsed output for the read-only plan agent", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_1", type: "text", text: "# New Plan" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "plan.md");
+        const logFile = path.join(root, "opencode.log");
+        await fs.writeFile(outputFile, "# Old Plan", "utf8");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("# New Plan");
+        expect(await fs.readFile(outputFile, "utf8")).toBe("# New Plan");
+      });
+    });
+  });
+
+  it("keeps the existing output file for non-plan agents", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_1", type: "text", text: "chat output" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+          opencode: { agent: "build" },
+        });
+        const outputFile = path.join(root, "plan.md");
+        const logFile = path.join(root, "opencode.log");
+        await fs.writeFile(outputFile, "# Plan written by agent", "utf8");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("# Plan written by agent");
+        expect(await fs.readFile(outputFile, "utf8")).toBe("# Plan written by agent");
+      });
+    });
+  });
+
+  it("writes parsed output when non-plan agent produced no file", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_1", type: "text", text: "fresh output" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+          opencode: { agent: "build" },
+        });
+        const outputFile = path.join(root, "missing.md");
+        const logFile = path.join(root, "opencode.log");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("fresh output");
+        expect(await fs.readFile(outputFile, "utf8")).toBe("fresh output");
+      });
+    });
+  });
+
+  it("joins multiple text parts of the final message", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_old", type: "text", text: "earlier turn" } }),
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_new", type: "text", text: "part one" } }),
+  JSON.stringify({ type: "text", sessionID: "ses_1", part: { messageID: "msg_new", type: "text", text: "part two" } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "plan.md");
+        const logFile = path.join(root, "opencode.log");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("part one\n\npart two");
+        expect(output).not.toContain("earlier turn");
+      });
+    });
+  });
+
+  it("fails when a valid event stream has no text parts", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+const lines = [
+  JSON.stringify({ type: "step_start", sessionID: "ses_empty", part: { type: "step-start" } }),
+  JSON.stringify({ type: "step_finish", sessionID: "ses_empty", part: { reason: "stop", tokens: { total: 10 } } })
+];
+for (const line of lines) {
+  process.stdout.write(line + "\\n");
+}
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "plan.md");
+        const logFile = path.join(root, "opencode.log");
+        const sessionFile = path.join(root, "opencode-session.txt");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+          sessionFile,
+        });
+
+        expect(success).toBe(false);
+        expect(output).toContain("no text");
+        expect(await fileExists(outputFile)).toBe(false);
+        expect(await fs.readFile(sessionFile, "utf8")).toBe("ses_empty");
+      });
+    });
+  });
+
+  it("falls back to raw output on invalid JSON", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+process.stdout.write("raw opencode output");
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "raw.md");
+        const logFile = path.join(root, "opencode.log");
+        const sessionFile = path.join(root, "opencode-session.txt");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+          sessionFile,
+        });
+
+        expect(success).toBe(true);
+        expect(output).toBe("raw opencode output");
+        expect(await fs.readFile(outputFile, "utf8")).toBe("raw opencode output");
+        expect(await fileExists(sessionFile)).toBe(false);
+      });
+    });
+  });
+
+  it("returns error output on nonzero exit", async () => {
+    await withTempDir(async (root) => {
+      const binDir = path.join(root, "bin");
+      await fs.mkdir(binDir, { recursive: true });
+
+      await writeExecutable(
+        path.join(binDir, "opencode"),
+        `#!/usr/bin/env bun
+process.stderr.write("opencode failed");
+process.exit(1);
+`,
+      );
+
+      await withPatchedPath(binDir, async () => {
+        const adapter = new OpencodeCLISyncAdapter({
+          id: "opencode",
+          type: "opencode",
+          model: "opencode/deepseek-v4-flash-free",
+        });
+        const outputFile = path.join(root, "error.md");
+        const logFile = path.join(root, "opencode.log");
+
+        const [success, output] = await adapter.runSync({
+          worktree: root,
+          prompt: "test",
+          outputFile,
+          logFile,
+        });
+
+        expect(success).toBe(false);
+        expect(output).toContain("opencode failed");
+      });
+    });
+  });
+
+  it("handles missing session files", async () => {
+    await withTempDir(async (root) => {
+      const logFile = path.join(root, "opencode.log");
+      const outputFile = path.join(root, "output.md");
+      const adapter = new OpencodeCLIAdapter({
+        id: "opencode",
+        type: "opencode",
+        model: "opencode/deepseek-v4-flash-free",
+      });
+
+      const missingSession = path.join(root, "missing-session.txt");
+
+      const originalSpawn = Bun.spawn;
+      const bunSpawn = Bun as unknown as { spawn: (options: any) => Bun.Subprocess };
+      const commands: string[][] = [];
+      bunSpawn.spawn = (options: { cmd: string[] }) => {
+        commands.push(options.cmd);
+        return {
+          stdout: null,
+          stderr: null,
+          exited: Promise.resolve(0),
+          exitCode: 0,
+          kill: () => {},
+        } as unknown as Bun.Subprocess;
+      };
+
+      try {
+        adapter.spawn({ worktree: root, prompt: "hello", outputFile, logFile });
+        adapter.spawn({
+          worktree: root,
+          prompt: "hello",
+          outputFile,
+          logFile,
+          sessionFile: missingSession,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } finally {
+        bunSpawn.spawn = originalSpawn as unknown as (options: any) => Bun.Subprocess;
+      }
+
+      for (const cmd of commands) {
+        expect(cmd).not.toContain("--session");
+      }
+      expect(await fs.readFile(logFile, "utf8")).toBe("");
     });
   });
 });

@@ -6,6 +6,7 @@ export { Phase, AgentStatus } from "./enums";
 export type {
   ClaudeConfig,
   CodexConfig,
+  OpencodeConfig,
   AgentConfig,
   AgentStatusMap,
   AgentPlanIdMap,
