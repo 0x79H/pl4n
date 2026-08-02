@@ -23,22 +23,28 @@ export async function streamToLog(params: {
     await fs.writeFile(logFile, "", "utf8");
   }
 
-  const decoder = new TextDecoder();
-
   const readStream = async (stream: ReadableStream<Uint8Array> | null): Promise<string> => {
     if (!stream) {
       return "";
     }
     const reader = stream.getReader();
+    // One decoder per stream, in streaming mode: a multi-byte character split
+    // across chunk boundaries must not decode to U+FFFD.
+    const decoder = new TextDecoder();
     let output = "";
     while (true) {
       const { value, done } = await reader.read();
       if (done) {
         break;
       }
-      const chunk = decoder.decode(value);
+      const chunk = decoder.decode(value, { stream: true });
       output += chunk;
       await fs.appendFile(logFile, chunk, "utf8");
+    }
+    const tail = decoder.decode();
+    if (tail.length > 0) {
+      output += tail;
+      await fs.appendFile(logFile, tail, "utf8");
     }
     return output;
   };
